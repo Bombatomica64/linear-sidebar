@@ -1,0 +1,74 @@
+id = "lollo/linear"
+name = "Linear"
+version = "1.0.0"
+plugin_api = 13
+author = "lollo"
+license = "MIT"
+icon = "git-branch"
+description = "Fast Linear issue browser backed by the local rofi Linear SQLite cache."
+tags = ["bar", "panel", "service", "development", "productivity"]
+dependencies = ["python3", "bash"]
+
+[[setting]]
+key = "refresh_interval"
+type = "int"
+label_key = "settings.refresh_interval.label"
+description_key = "settings.refresh_interval.description"
+default = 300
+min = 30
+max = 3600
+
+[[setting]]
+key = "result_limit"
+type = "int"
+label_key = "settings.result_limit.label"
+description_key = "settings.result_limit.description"
+default = 80
+min = 10
+max = 500
+
+[[setting]]
+key = "my_name"
+type = "string"
+label_key = "settings.my_name.label"
+description_key = "settings.my_name.description"
+default = ""
+
+[[setting]]
+key = "helper_path"
+type = "string"
+label_key = "settings.helper_path.label"
+description_key = "settings.helper_path.description"
+default = "~/.config/rofi/scripts/linear-cache.py"
+
+[[setting]]
+key = "env_path"
+type = "string"
+label_key = "settings.env_path.label"
+description_key = "settings.env_path.description"
+default = "~/.config/rofi/linear.env"
+
+[[widget]]
+id = "linear"
+entry = "widget.luau"
+
+[[panel]]
+id = "browser"
+entry = "panel.luau"
+width = 1000
+height = 700
+placement = "floating"
+position = "center"
+open_near_click = true
+# Keyboard navigation over the result list, ported from the v4 Panel.qml
+# (Down/Up move by 1, PageDown/PageUp by 6, Enter/Return loads the
+# highlighted row's detail). Only non-printable keys are captured, so
+# typing in the search ui.input is unaffected — the host routes printable
+# keys to the focused text field before consulting capture_keys.
+# "prior"/"next" are the chord names for PageUp/PageDown (X11/Hyprland-style
+# keysym names — "pageup"/"pagedown" is rejected by `noctalia plugins lint`).
+capture_keys = ["down", "up", "prior", "next", "return", "enter"]
+
+[[service]]
+id = "linear-service"
+entry = "service.luau"
