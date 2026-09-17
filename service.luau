@@ -32,8 +32,17 @@ local detail = {
 }
 
 local listPending = false
+local listQueued = false
 local listGeneration = 0
 local detailGeneration = 0
+
+-- The helper's query is a single positional string it ORs across every column,
+-- so appending a status or assignee term to the free text *widens* the result
+-- set instead of narrowing it ("coupon Urgent" returned 3 + 69 = 72 rows, not
+-- the 0 that actually match both). The filters are therefore applied here, over
+-- the rows the helper returned, and the helper only ever sees free text.
+local rawIssues = {}
+local rawProjects = {}
 
 local function trim(value)
   return noctalia.string.trim(tostring(value or ""))
@@ -82,7 +91,63 @@ local function sourcedScript(tail)
   return `set -a; [ -f {env} ] && . {env}; set +a; exec {tail}`
 end
 
+local function lowerContains(haystack, needle)
+  if needle == "" then
+    return true
+  end
+  return tostring(haystack or ""):lower():find(needle:lower(), 1, true) ~= nil
+end
+
+-- The status row mixes Linear priority labels ("Urgent", "High") with workflow
+-- state names ("Todo", "In Progress", ...), exactly as the v4 panel did, so a
+-- row matches if either field carries the term.
+local function matchesStatus(item)
+  local want = trim(state.status)
+  if want == "" or want == "All" then
+    return true
+  end
+  return lowerContains(item.state, want) or lowerContains(item.priority, want)
+end
+
+local function matchesView(item)
+  if state.view == "Projects" then
+    return tostring(item.kind) == "project"
+  end
+  if state.view == "My Issues" then
+    if tostring(item.kind) == "project" then
+      return false
+    end
+    local term = configString("my_name", "")
+    -- No configured name means no way to tell your issues from anyone else's.
+    -- v4 guessed the first assignee in the result set, which silently filtered
+    -- by a stranger; the panel shows a hint instead.
+    if term == "" then
+      return true
+    end
+    return lowerContains(item.assignee, term)
+  end
+  return true
+end
+
+local function applyFilters()
+  state.issues = {}
+  state.projects = {}
+  for _, item in ipairs(rawIssues) do
+    if matchesView(item) and matchesStatus(item) then
+      table.insert(state.issues, item)
+    end
+  end
+  for _, item in ipairs(rawProjects) do
+    -- A status term is a priority or an issue workflow state; projects carry
+    -- neither, so any active status filter simply excludes them.
+    if matchesView(item) and (trim(state.status) == "" or state.status == "All") then
+      table.insert(state.projects, item)
+    end
+  end
+end
+
 local function publishResults()
+  applyFilters()
   state.revision += 1
   noctalia.state.set("linear_results", {
     issues = state.issues,
@@ -95,6 +160,7 @@ local function publishResults()
     query = state.query,
     view = state.view,
     status = state.status,
+    needsMyName = state.view == "My Issues" and configString("my_name", "") == "",
   })
   noctalia.state.set("linear_status", {
     issueCount = #state.issues,
@@ -118,49 +184,39 @@ local function publishDetail()
   })
 end
 
--- Mirrors Main.qml's myIssueTerm(): the configured name wins, otherwise fall
--- back to the first assignee visible in the current result set.
-local function myIssueTerm()
-  local configured = configString("my_name", "")
-  if configured ~= "" then
-    return configured
+-- What the helper is actually asked for. Free text wins outright, because
+-- mixing it with a filter term is what broke the filters in the first place.
+-- With no free text there is nothing to widen, so the active filter is pushed
+-- down instead: the helper then returns rows that match it rather than the
+-- newest `result_limit` rows, which is what makes a bare "Urgent" or "My
+-- Issues" see past the limit. Either way applyFilters() has the final say.
+local function effectiveQuery()
+  local q = trim(state.query)
+  if q ~= "" then
+    return q
   end
-  for _, issue in ipairs(state.issues) do
-    local assignee = trim(issue.assignee)
-    if assignee ~= "" then
-      return assignee
+  if state.view == "My Issues" then
+    local term = configString("my_name", "")
+    if term ~= "" then
+      return term
     end
+  end
+  if state.view ~= "Projects" and state.status ~= "All" and trim(state.status) ~= "" then
+    return state.status
   end
   return ""
 end
 
--- Mirrors Main.qml's effectiveQuery(): free text + status term + view term,
--- space joined, all fed to the helper's single positional query argument.
-local function effectiveQuery()
-  local parts = {}
-  local q = trim(state.query)
-  if q ~= "" then
-    table.insert(parts, q)
-  end
-  if state.status ~= "All" and trim(state.status) ~= "" then
-    table.insert(parts, state.status)
-  end
-  if state.view == "My Issues" then
-    local term = myIssueTerm()
-    if term ~= "" then
-      table.insert(parts, term)
-    end
-  elseif state.view == "Projects" then
-    table.insert(parts, "project")
-  end
-  return table.concat(parts, " ")
-end
-
 local function runList(queryOverride)
+  -- A filter click while a read is in flight used to be dropped on the floor,
+  -- which is most of what "the filters don't work" looked like. Remember that
+  -- one is owed and re-run when the current one lands.
   if listPending then
+    listQueued = true
     return
   end
   listPending = true
+  listQueued = false
   listGeneration += 1
   local generation = listGeneration
   local query = queryOverride or effectiveQuery()
@@ -174,10 +230,15 @@ local function runList(queryOverride)
     if generation ~= listGeneration then
       return
     end
+    if listQueued then
+      listQueued = false
+      runList()
+      return
+    end
     state.loading = false
     if not result or result.exitCode ~= 0 then
-      state.issues = {}
-      state.projects = {}
+      rawIssues = {}
+      rawProjects = {}
       state.error = trim((result and result.stderr) or "")
       if state.error == "" then
         state.error = noctalia.tr("error.list_failed")
@@ -187,8 +248,8 @@ local function runList(queryOverride)
     end
     local raw = trim(result.stdout)
     if raw == "" then
-      state.issues = {}
-      state.projects = {}
+      rawIssues = {}
+      rawProjects = {}
       state.updatedAt = noctalia.nowMs()
       publishResults()
       return
@@ -199,8 +260,8 @@ local function runList(queryOverride)
       publishResults()
       return
     end
-    state.issues = type(decoded.issues) == "table" and decoded.issues or {}
-    state.projects = type(decoded.projects) == "table" and decoded.projects or {}
+    rawIssues = type(decoded.issues) == "table" and decoded.issues or {}
+    rawProjects = type(decoded.projects) == "table" and decoded.projects or {}
     state.error = ""
     state.updatedAt = noctalia.nowMs()
     publishResults()
@@ -321,13 +382,7 @@ local function executeCommand(command)
     state.query = tostring(command.query or "")
     state.view = tostring(command.view or state.view)
     state.status = tostring(command.status or state.status)
-    -- Projects view with no free text asks the helper for everything, like
-    -- Main.qml's showProjects() did with load("").
-    if state.view == "Projects" and trim(state.query) == "" and state.status == "All" then
-      runList("")
-    else
-      runList()
-    end
+    runList()
   elseif action == "refresh" then
     runList()
   elseif action == "detail" then

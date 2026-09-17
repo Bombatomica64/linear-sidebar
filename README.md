@@ -8,7 +8,9 @@ cache, and syncing is an explicit action.
 - Debounced search across issue numbers, titles, projects and statuses
 - View filter: **All** / **My Issues** / **Projects**
 - Status filter: **All**, **Urgent**, **High**, **Todo**, **In Progress**, **In Review**, **Backlog**
-- Detail pane with a markdown-flattened description, **Open in Linear** and **Copy link**
+- Filters intersect: *My Issues* + *Urgent* + free text narrows on all three at once
+- Linear's own priority and state colors on every row — Urgent is red, High orange
+- Detail pane with the description rendered as real markdown, **Open in Linear** and **Copy link**
 - Full keyboard navigation over the result list
 - Manual sync (right click the bar widget) and periodic auto-refresh
 
@@ -16,7 +18,7 @@ cache, and syncing is an explicit action.
 
 ### Noctalia v5 or newer
 
-This is a **v5 Luau plugin** (`plugin_api = 13`). Noctalia v4 used a completely
+This is a **v5 Luau plugin** (`plugin_api = 21`). Noctalia v4 used a completely
 different, incompatible QML plugin system — a v4 install will not load this
 plugin, and there is no compatibility shim. Check with:
 
@@ -121,7 +123,7 @@ consulting `capture_keys`.
 | --- | --- | --- | --- |
 | `refresh_interval` | int, seconds (30–3600) | `300` | how often the cached list is re-read automatically |
 | `result_limit` | int (10–500) | `80` | maximum rows requested from the cache helper |
-| `my_name` | string | `""` | assignee name used by the *My Issues* filter; empty falls back to the first assignee seen in the current results |
+| `my_name` | string | `""` | assignee name used by the *My Issues* filter; while it is empty that filter shows every issue and the panel says so |
 | `helper_path` | string | `~/.config/rofi/scripts/linear-cache.py` | path to the `linear-cache.py` helper |
 | `env_path` | string | `~/.config/rofi/linear.env` | env file sourced before detail and sync calls |
 
@@ -129,7 +131,7 @@ consulting `capture_keys`.
 
 | file | role |
 | --- | --- |
-| `plugin.toml` | manifest: settings schema, widget, panel (1000×700 floating, centered), service, `capture_keys` |
+| `plugin.toml` | manifest: settings schema, widget, panel (1500×900 floating, centered), service, `capture_keys` |
 | `service.luau` | owns every subprocess; publishes `linear_results`, `linear_detail`, `linear_status`; consumes `linear_command` |
 | `widget.luau` | bar button; reads `linear_status`, posts `linear_command` intents |
 | `panel.luau` | search box, view filter, status filter, result list, detail pane; posts `linear_command` intents and handles `onKey` |
@@ -151,13 +153,82 @@ API. The behavioural differences worth knowing:
   settings now.
 - The separate "All" reset button and the Todo / My Issues shortcut buttons
   collapsed into the view and status filter rows, which express the same states.
-- The panel is a fixed 1000×700 floating panel rather than QML
-  `contentPreferredWidth/Height` scaling against `Style.uiScaleRatio`.
-- Query assembly, the result list formatting and the markdown flattening in the
-  detail pane are line-for-line ports of the v4 originals.
+- The panel is a fixed 1500×900 floating panel rather than QML
+  `contentPreferredWidth/Height` scaling against `Style.uiScaleRatio`. A panel
+  cannot resize itself — the size is read once from the manifest — so changing
+  it means editing `width`/`height` in `plugin.toml`.
+- The result list formatting is a line-for-line port of the v4 original. **Query
+  assembly is not**: see *Filtering* below. Neither is the description — v4's
+  `plainMarkdown()` flattened markdown to plain text with a handful of regexes,
+  and `ui.markdown` (API 21) renders it properly instead, so that helper is gone.
+- Two layout traps cost a while, both worth knowing before touching `panel.luau`:
+  a column's children **shrink-wrap and center** on the cross axis unless you
+  pass `align = "stretch"` (nothing you set on the *child* fixes it), and
+  `flexGrow` is always the main axis, so it means width in a row and height in a
+  column.
 - Keyboard navigation was dropped in the first v5 pass (the API appeared to
   expose no key hook) and later restored once `capture_keys` + `onKey` were
   found.
+
+## Filtering
+
+`linear-cache.py` takes one positional query string and ORs it across every
+column, per whitespace-separated word. v4 built that string by concatenating the
+free text, the status term and the assignee name — so each filter *widened* the
+result set instead of narrowing it. Searching `coupon` with **Urgent** selected
+returned every coupon issue **plus** every urgent issue.
+
+So the helper now only ever sees free text, and the view and status filters are
+applied in `service.luau` over the rows it returned:
+
+- a status matches when it is a substring of the row's workflow state *or* its
+  priority label, because the row mixes both ("Urgent", "In Progress")
+- *My Issues* matches on `assignee` against the `my_name` setting
+- *Projects* keeps only projects; any active status filter excludes projects,
+  which carry neither a priority nor an issue workflow state
+
+When there is no free text the active filter is pushed down to the helper as the
+query, so a bare **Urgent** sees past `result_limit` instead of filtering the
+newest 80 rows. `applyFilters()` still has the final say either way.
+
+## Colors
+
+Each row carries a stripe and a colored glyph keyed to its **priority** (issues)
+or its **state** (projects), and the state and priority chips under the title are
+colored to match:
+
+| priority | | state | |
+| --- | --- | --- | --- |
+| Urgent | `#e5484d` | Backlog / Planned | `#95a2b3` |
+| High | `#f76808` | Todo | `#c7cbd1` |
+| Medium | `#f2c94c` | In Progress | `#f2c94c` |
+| Low | `#7c92a8` | In Review | `#4cb782` |
+| No priority | muted role | Done / Completed | `#5e6ad2` |
+| | | Canceled / Duplicate | `#818a96` |
+
+These are literal hex, not palette roles, because the point is that a row looks
+the same shade of urgent here as it does in Linear. Everything structural —
+selection, chrome, body text — still uses theme roles, so the panel follows the
+active Noctalia theme.
+
+The mapping is by **name**: `linear-cache.py` stores `state { name }` and
+`priorityLabel`, not the API's `state { color }`, so the cache carries no color
+of its own. A state name that is not in the table falls back to the muted role
+rather than being guessed at — add a row to `STATE_COLORS` in `panel.luau` for a
+custom workflow state.
+
+## Tests
+
+```sh
+./tests/run.sh          # needs `luau` on PATH
+```
+
+Concatenates a stubbed host, a fixture and `service.luau` into one script and
+runs the real filter path against it — the entry points are chunks the Noctalia
+host loads, not modules, so they are concatenated rather than required. The stub
+reimplements the helper's OR matching, so the union-vs-intersection regression is
+caught in the test rather than in the panel. It can also hold a read in flight,
+which covers the queueing path: a filter click during a read used to be dropped.
 
 ## License
 

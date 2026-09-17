@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  luau:
+    name: luau
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install luau
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -sSLo luau.zip https://github.com/luau-lang/luau/releases/latest/download/luau-ubuntu.zip
+          unzip -q luau.zip -d "$HOME/.local/bin"
+          chmod +x "$HOME/.local/bin"/luau*
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # Parses and compiles every entry point and throws the bytecode away. Not
+      # luau-analyze: the host injects `noctalia`, `ui`, `panel` and `widget` as
+      # globals and calls `onOpen`/`update`/`onClick` itself, so an untyped
+      # analyze pass reports nothing but unknown globals and unused functions.
+      - name: Syntax
+        run: |
+          fail=0
+          for f in *.luau tests/*.luau; do
+            if luau-compile --null "$f" >/dev/null; then echo "ok   $f"; else fail=1; fi
+          done
+          exit $fail
+
+      # Runs service.luau's real filter path against a stubbed host.
+      - name: Filter tests
+        run: ./tests/run.sh
+
+  plugin:
+    name: manifest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Every key the code reads must be declared, and every tr() key must be
+      # translated - the two drift apart silently otherwise, because a missing
+      # setting reads as nil and a missing translation renders as its own key.
+      - name: Cross-check manifest, settings and translations
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, re, sys, tomllib
+
+          manifest = tomllib.loads(pathlib.Path("plugin.toml").read_text())
+          sources = {p: p.read_text() for p in pathlib.Path().glob("*.luau")}
+          problems = []
+
+          declared = {s["key"] for s in manifest.get("setting", [])}
+          for entry in ("widget", "panel", "service", "shortcut"):
+              for block in manifest.get(entry, []):
+                  declared |= {s["key"] for s in block.get("setting", [])}
+
+          # Accessors are discovered, not hardcoded: a wrapper like
+          # configString(key, fallback) forwards to noctalia.getConfig, so its
+          # own call sites are config reads too.
+          accessors = {"noctalia.getConfig"}
+          for text in sources.values():
+              for name, body in re.findall(r"local function (\w+)\((.*?)\n?end\n", text, re.S):
+                  if "noctalia.getConfig" in body:
+                      accessors.add(name)
+
+          for path, text in sources.items():
+              for accessor in accessors:
+                  for key in re.findall(re.escape(accessor) + r'\(\s*"([^"]+)"', text):
+                      if key not in declared:
+                          problems.append(f"{path}: reads undeclared setting {key!r}")
+
+          translations = json.loads(pathlib.Path("translations/en.json").read_text())
+          # Only whole literals: the view and status rows build their keys by
+          # concatenation ("views." .. slug), and a captured prefix is not a key.
+          for path, text in sources.items():
+              for key in re.findall(r'(?:noctalia\.)?tr\(\s*"([^"]+)"\s*[,)]', text):
+                  if key not in translations:
+                      problems.append(f"{path}: tr({key!r}) has no translation")
+
+          # The filter rows derive their keys from the VIEWS and STATUSES tables,
+          # so those two are checked against the tables rather than the call site.
+          panel = sources[pathlib.Path("panel.luau")]
+          for table_name, prefix in (("STATUSES", "statuses."), ("VIEWS", "views.")):
+              literal = re.search(r"local " + table_name + r" = {(.*?)}", panel, re.S)
+              if not literal:
+                  problems.append(f"panel.luau: {table_name} not found")
+                  continue
+              for label in re.findall(r'"([^"]+)"', literal.group(1)):
+                  key = prefix + re.sub(r"\s", "_", label).lower()
+                  if key not in translations:
+                      problems.append(f"panel.luau: {table_name} entry {label!r} needs {key!r}")
+
+          for block in manifest.get("setting", []):
+              for field in ("label_key", "description_key"):
+                  key = block.get(field)
+                  if key and key not in translations:
+                      problems.append(f"plugin.toml: {block['key']}.{field} {key!r} has no translation")
+
+          if problems:
+              print("\n".join(problems))
+              sys.exit(1)
+          print(f"ok: {len(declared)} settings, {len(translations)} translations")
+          PY

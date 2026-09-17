@@ -64,9 +64,6 @@ end
 local function resultsList()
   local issues = type(results.issues) == "table" and results.issues or {}
   local projects = type(results.projects) == "table" and results.projects or {}
-  if viewFilter == "Projects" then
-    return projects
-  end
   local list = {}
   for _, item in ipairs(issues) do
     table.insert(list, item)
@@ -75,6 +72,65 @@ local function resultsList()
     table.insert(list, item)
   end
   return list
+end
+
+-- ── Linear's colors ────────────────────────────────────────────────────────
+--
+-- Literal hex rather than palette roles: these are Linear's own state and
+-- priority colors, and the point is that a row looks the same shade of urgent
+-- here as it does in the app. Everything structural (selection, text, chrome)
+-- still uses theme roles, so the panel follows the active Noctalia theme.
+--
+-- The cache carries state and priority as plain strings - linear-cache.py
+-- stores `state { name }` and `priorityLabel`, not the API's `state { color }` -
+-- so the mapping is by name, and an unrecognised name falls back to the muted
+-- role rather than guessing.
+
+local PRIORITY_COLORS = {
+  urgent = "#e5484d",
+  high = "#f76808",
+  medium = "#f2c94c",
+  low = "#7c92a8",
+}
+
+local STATE_COLORS = {
+  backlog = "#95a2b3",
+  todo = "#c7cbd1",
+  ["in progress"] = "#f2c94c",
+  started = "#f2c94c",
+  ["in review"] = "#4cb782",
+  done = "#5e6ad2",
+  completed = "#5e6ad2",
+  canceled = "#818a96",
+  cancelled = "#818a96",
+  duplicate = "#818a96",
+  planned = "#95a2b3",
+}
+
+local MUTED = "on_surface_variant"
+
+local function priorityColor(value)
+  return PRIORITY_COLORS[tostring(value or ""):lower()] or MUTED
+end
+
+local function stateColor(value)
+  return STATE_COLORS[tostring(value or ""):lower()] or MUTED
+end
+
+-- Urgent and High are the two that have to be spottable while scrolling, so
+-- they get the weight as well as the color.
+local function priorityIsHot(value)
+  local key = tostring(value or ""):lower()
+  return key == "urgent" or key == "high"
+end
+
+-- The stripe down the left edge of a row: an issue is keyed by priority, a
+-- project by its own state, since projects have no priority.
+local function accentColor(item)
+  if tostring(item.kind) == "project" then
+    return stateColor(item.state)
+  end
+  return priorityColor(item.priority)
 end
 
 local function itemUrl(item)
@@ -109,43 +165,6 @@ local function itemTitle(item)
     return trim(item.name)
   end
   return trim(item.title)
-end
-
-local function joinMeta(parts)
-  local kept = {}
-  for _, value in ipairs(parts) do
-    local text = trim(value)
-    if text ~= "" then
-      table.insert(kept, text)
-    end
-  end
-  return table.concat(kept, " · ")
-end
-
-local function itemMeta(item)
-  if type(item) ~= "table" then
-    return ""
-  end
-  if tostring(item.kind) == "project" then
-    return joinMeta({ item.state, item.teams })
-  end
-  local priority = trim(item.priority)
-  if priority == "" then
-    priority = tr("item.no_priority")
-  end
-  return joinMeta({ item.state, priority, item.assignee, item.project })
-end
-
--- Same flattening as Panel.qml's plainMarkdown(), rewritten with Lua patterns.
-local function plainMarkdown(value)
-  local text = tostring(value or "")
-  text = text:gsub("```.-```", "[code]")
-  text = text:gsub("`([^`]+)`", "%1")
-  text = text:gsub("%*%*([^%*]+)%*%*", "%1")
-  text = text:gsub("%*([^%*]+)%*", "%1")
-  text = text:gsub("#+%s*", "")
-  text = text:gsub("%[([^%]]+)%]%([^%)]*%)", "%1")
-  return trim(text)
 end
 
 local function detailObject()
@@ -284,9 +303,6 @@ local function viewRow()
     local label = tr("views." .. view:gsub("%s", "_"):lower())
     table.insert(buttons, filterButton(label, viewFilter == view, function()
       viewFilter = view
-      if view ~= "All" then
-        statusFilter = "All"
-      end
       requestSearch()
       dirty = true
     end))
@@ -313,30 +329,96 @@ local function statusRow()
   return ui.row({ gap = 4, align = "center" }, buttons)
 end
 
+-- Meta chips, interleaved with dot separators so the colors survive. A single
+-- concatenated string could not be colored piecewise, which is why the row is a
+-- container now rather than the ui.button it used to be.
+local function metaChips(item)
+  local chips = {}
+  local function chip(text, color, weight)
+    text = trim(text)
+    if text == "" then
+      return
+    end
+    if #chips > 0 then
+      table.insert(chips, ui.label({ text = "·", color = MUTED, fontSize = 11 }))
+    end
+    table.insert(chips, ui.label({
+      text = text,
+      color = color,
+      fontSize = 11,
+      fontWeight = weight or "normal",
+      maxLines = 1,
+    }))
+  end
+
+  if tostring(item.kind) == "project" then
+    chip(item.state, stateColor(item.state), "medium")
+    chip(item.teams, MUTED)
+    return chips
+  end
+
+  chip(item.state, stateColor(item.state), "medium")
+  local priority = trim(item.priority)
+  if priority == "" then
+    chip(tr("item.no_priority"), MUTED)
+  else
+    chip(priority, priorityColor(priority), priorityIsHot(priority) and "bold" or "normal")
+  end
+  chip(item.assignee, MUTED)
+  chip(item.project, MUTED)
+  return chips
+end
+
 local function resultRow(item)
   local id = tostring(item.id or "")
   local selected = id == selectedId
   local ref = itemRef(item)
-  local summary = itemTitle(item)
+
+  local heading = { }
   if ref ~= "" then
-    summary = `{ref}  ·  {summary}`
+    table.insert(heading, ui.label({
+      text = ref,
+      color = tostring(item.kind) == "project" and MUTED or "primary",
+      fontSize = 12,
+      fontWeight = "bold",
+      maxLines = 1,
+    }))
   end
-  local meta = itemMeta(item)
-  if meta ~= "" then
-    summary = `{summary}\n{meta}`
-  end
-  return ui.button({
-    key = "res-" .. id,
-    text = summary,
-    glyph = tostring(item.kind) == "project" and "folder" or "circle-dot",
-    contentAlign = "start",
-    variant = selected and "primary" or "outline",
-    selected = selected,
+  table.insert(heading, ui.label({
+    text = itemTitle(item),
     fontSize = 12,
+    color = "on_surface",
+    flexGrow = 1,
+    maxLines = 1,
+  }))
+
+  -- onClick on the container makes the whole row the click target and puts it
+  -- in the tab order, which is what a ui.button gave us before.
+  return ui.row({
+    key = "res-" .. id,
+    gap = 8,
+    padding = 8,
+    radius = 8,
+    align = "stretch",
+    -- Fill only, no border: a clickable container joins the tab order, so the
+    -- host draws its own focus outline on whichever row it last focused. A
+    -- border here would be a second cursor that disagrees with that one.
+    fill = selected and "primary/0.28" or "surface_variant/0.35",
     onClick = function()
       selectItem(item)
       render()
     end,
+  }, {
+    ui.box({ width = 3, radius = 2, fill = accentColor(item) }),
+    ui.glyph({
+      name = tostring(item.kind) == "project" and "folder" or "circle-dot",
+      size = 15,
+      color = accentColor(item),
+    }),
+    ui.column({ gap = 2, flexGrow = 1 }, {
+      ui.row({ gap = 6, align = "center" }, heading),
+      ui.row({ gap = 6, align = "center" }, metaChips(item)),
+    }),
   })
 end
 
@@ -359,23 +441,24 @@ local function listPane()
   end
   -- flexGrow (not width) is what actually splits the two panes; a fixed width
   -- on the scroll collapses instead of holding the requested size.
-  return ui.scroll({ key = "linear-results", flexGrow = 1, gap = 6, align = "stretch" }, children)
+  return ui.scroll({ key = "linear-results", flexGrow = 6, gap = 6, align = "stretch" }, children)
 end
 
 local function detailPane()
   local object = detailObject()
   if type(object) ~= "table" then
-    return ui.column({ flexGrow = 1, padding = 16, align = "center", justify = "center" }, {
+    return ui.column({ flexGrow = 4, padding = 16, align = "center", justify = "center" }, {
       ui.label({ text = tr("panel.select_hint"), color = "on_surface_variant", textAlign = "center" }),
     })
   end
 
   local children = {
     ui.row({ gap = 8, align = "center" }, {
+      ui.box({ width = 3, height = 20, radius = 2, fill = accentColor(object) }),
       ui.label({ text = itemRef(object), color = "primary", fontWeight = "bold", fontSize = 13 }),
       ui.label({ text = itemTitle(object), fontWeight = "bold", fontSize = 15, flexGrow = 1, maxLines = 3 }),
     }),
-    ui.label({ text = itemMeta(object), color = "on_surface_variant", fontSize = 12, maxLines = 3 }),
+    ui.row({ gap = 6, align = "center" }, metaChips(object)),
   }
   if detail.loading == true then
     table.insert(children, ui.label({ text = tr("panel.detail_loading"), color = "on_surface_variant" }))
@@ -385,12 +468,12 @@ local function detailPane()
   end
   table.insert(children, ui.separator({}))
 
-  local description = plainMarkdown(object.description)
+  local description = trim(object.description)
   if description == "" then
     description = tr("panel.no_description")
   end
-  table.insert(children, ui.scroll({ key = "linear-detail", flexGrow = 1, gap = 6, align = "stretch" }, {
-    ui.label({ text = description, color = "on_surface" }),
+  table.insert(children, ui.scroll({ key = "linear-detail", flexGrow = 1, gap = 6 }, {
+    ui.markdown({ text = description }),
   }))
 
   local url = itemUrl(object)
@@ -418,12 +501,31 @@ local function detailPane()
     ui.spacer({ flexGrow = 1 }),
   }))
 
-  return ui.column({ flexGrow = 1, gap = 6, padding = 8 }, children)
+  -- align = "stretch" is load-bearing. A column's children are *not* stretched
+  -- across the cross axis by default on 5.1.0 - they shrink-wrap and center - so
+  -- the description used to wrap inside a ~260px ribbon centered in a ~555px
+  -- pane, and the action buttons sat centered with it. Nothing about the scroll
+  -- could fix that from the inside: neither flexGrow nor an explicit width on
+  -- the scroll changed anything, because the constraint was the parent's.
+  -- listPane never had the bug: it is a direct child of the horizontal split
+  -- row, where the same flexGrow is the main axis.
+  return ui.column({ flexGrow = 4, gap = 6, padding = 8, align = "stretch" }, children)
 end
 
 render = function()
   dirty = false
-  local children = { headerRow(), searchRow(), viewRow(), statusRow() }
+  local children = { headerRow(), searchRow(), viewRow() }
+  if viewFilter ~= "Projects" then
+    table.insert(children, statusRow())
+  end
+  if results.needsMyName == true then
+    table.insert(children, ui.label({
+      text = tr("panel.needs_my_name"),
+      color = "on_surface_variant",
+      fontSize = 11,
+      maxLines = 2,
+    }))
+  end
   if trim(results.error) ~= "" then
     table.insert(children, ui.label({ text = trim(results.error), color = "error", maxLines = 3 }))
   end
