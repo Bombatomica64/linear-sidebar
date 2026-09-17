@@ -64,9 +64,6 @@ end
 local function resultsList()
   local issues = type(results.issues) == "table" and results.issues or {}
   local projects = type(results.projects) == "table" and results.projects or {}
-  if viewFilter == "Projects" then
-    return projects
-  end
   local list = {}
   for _, item in ipairs(issues) do
     table.insert(list, item)
@@ -284,9 +281,6 @@ local function viewRow()
     local label = tr("views." .. view:gsub("%s", "_"):lower())
     table.insert(buttons, filterButton(label, viewFilter == view, function()
       viewFilter = view
-      if view ~= "All" then
-        statusFilter = "All"
-      end
       requestSearch()
       dirty = true
     end))
@@ -359,13 +353,13 @@ local function listPane()
   end
   -- flexGrow (not width) is what actually splits the two panes; a fixed width
   -- on the scroll collapses instead of holding the requested size.
-  return ui.scroll({ key = "linear-results", flexGrow = 1, gap = 6, align = "stretch" }, children)
+  return ui.scroll({ key = "linear-results", flexGrow = 6, gap = 6, align = "stretch" }, children)
 end
 
 local function detailPane()
   local object = detailObject()
   if type(object) ~= "table" then
-    return ui.column({ flexGrow = 1, padding = 16, align = "center", justify = "center" }, {
+    return ui.column({ flexGrow = 4, padding = 16, align = "center", justify = "center" }, {
       ui.label({ text = tr("panel.select_hint"), color = "on_surface_variant", textAlign = "center" }),
     })
   end
@@ -418,12 +412,23 @@ local function detailPane()
     ui.spacer({ flexGrow = 1 }),
   }))
 
-  return ui.column({ flexGrow = 1, gap = 6, padding = 8 }, children)
+  return ui.column({ flexGrow = 4, gap = 6, padding = 8 }, children)
 end
 
 render = function()
   dirty = false
-  local children = { headerRow(), searchRow(), viewRow(), statusRow() }
+  local children = { headerRow(), searchRow(), viewRow() }
+  if viewFilter ~= "Projects" then
+    table.insert(children, statusRow())
+  end
+  if results.needsMyName == true then
+    table.insert(children, ui.label({
+      text = tr("panel.needs_my_name"),
+      color = "on_surface_variant",
+      fontSize = 11,
+      maxLines = 2,
+    }))
+  end
   if trim(results.error) ~= "" then
     table.insert(children, ui.label({ text = trim(results.error), color = "error", maxLines = 3 }))
   end
