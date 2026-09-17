@@ -9,6 +9,7 @@ cache, and syncing is an explicit action.
 - View filter: **All** / **My Issues** / **Projects**
 - Status filter: **All**, **Urgent**, **High**, **Todo**, **In Progress**, **In Review**, **Backlog**
 - Filters intersect: *My Issues* + *Urgent* + free text narrows on all three at once
+- Linear's own priority and state colors on every row — Urgent is red, High orange
 - Detail pane with a markdown-flattened description, **Open in Linear** and **Copy link**
 - Full keyboard navigation over the result list
 - Manual sync (right click the bar widget) and periodic auto-refresh
@@ -183,6 +184,32 @@ applied in `service.luau` over the rows it returned:
 When there is no free text the active filter is pushed down to the helper as the
 query, so a bare **Urgent** sees past `result_limit` instead of filtering the
 newest 80 rows. `applyFilters()` still has the final say either way.
+
+## Colors
+
+Each row carries a stripe and a colored glyph keyed to its **priority** (issues)
+or its **state** (projects), and the state and priority chips under the title are
+colored to match:
+
+| priority | | state | |
+| --- | --- | --- | --- |
+| Urgent | `#e5484d` | Backlog / Planned | `#95a2b3` |
+| High | `#f76808` | Todo | `#c7cbd1` |
+| Medium | `#f2c94c` | In Progress | `#f2c94c` |
+| Low | `#7c92a8` | In Review | `#4cb782` |
+| No priority | muted role | Done / Completed | `#5e6ad2` |
+| | | Canceled / Duplicate | `#818a96` |
+
+These are literal hex, not palette roles, because the point is that a row looks
+the same shade of urgent here as it does in Linear. Everything structural —
+selection, chrome, body text — still uses theme roles, so the panel follows the
+active Noctalia theme.
+
+The mapping is by **name**: `linear-cache.py` stores `state { name }` and
+`priorityLabel`, not the API's `state { color }`, so the cache carries no color
+of its own. A state name that is not in the table falls back to the muted role
+rather than being guessed at — add a row to `STATE_COLORS` in `panel.luau` for a
+custom workflow state.
 
 ## Tests
 

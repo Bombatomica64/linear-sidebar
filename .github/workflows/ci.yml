@@ -14,6 +14,7 @@ jobs:
 
       - name: Install luau
         run: |
+          mkdir -p "$HOME/.local/bin"
           curl -sSLo luau.zip https://github.com/luau-lang/luau/releases/latest/download/luau-ubuntu.zip
           unzip -q luau.zip -d "$HOME/.local/bin"
           chmod +x "$HOME/.local/bin"/luau*
