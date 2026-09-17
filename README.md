@@ -10,7 +10,7 @@ cache, and syncing is an explicit action.
 - Status filter: **All**, **Urgent**, **High**, **Todo**, **In Progress**, **In Review**, **Backlog**
 - Filters intersect: *My Issues* + *Urgent* + free text narrows on all three at once
 - Linear's own priority and state colors on every row — Urgent is red, High orange
-- Detail pane with a markdown-flattened description, **Open in Linear** and **Copy link**
+- Detail pane with the description rendered as real markdown, **Open in Linear** and **Copy link**
 - Full keyboard navigation over the result list
 - Manual sync (right click the bar widget) and periodic auto-refresh
 
@@ -18,7 +18,7 @@ cache, and syncing is an explicit action.
 
 ### Noctalia v5 or newer
 
-This is a **v5 Luau plugin** (`plugin_api = 13`). Noctalia v4 used a completely
+This is a **v5 Luau plugin** (`plugin_api = 21`). Noctalia v4 used a completely
 different, incompatible QML plugin system — a v4 install will not load this
 plugin, and there is no compatibility shim. Check with:
 
@@ -157,9 +157,15 @@ API. The behavioural differences worth knowing:
   `contentPreferredWidth/Height` scaling against `Style.uiScaleRatio`. A panel
   cannot resize itself — the size is read once from the manifest — so changing
   it means editing `width`/`height` in `plugin.toml`.
-- The result list formatting and the markdown flattening in the detail pane are
-  line-for-line ports of the v4 originals. **Query assembly is not**: see
-  *Filtering* below.
+- The result list formatting is a line-for-line port of the v4 original. **Query
+  assembly is not**: see *Filtering* below. Neither is the description — v4's
+  `plainMarkdown()` flattened markdown to plain text with a handful of regexes,
+  and `ui.markdown` (API 21) renders it properly instead, so that helper is gone.
+- Two layout traps cost a while, both worth knowing before touching `panel.luau`:
+  a column's children **shrink-wrap and center** on the cross axis unless you
+  pass `align = "stretch"` (nothing you set on the *child* fixes it), and
+  `flexGrow` is always the main axis, so it means width in a row and height in a
+  column.
 - Keyboard navigation was dropped in the first v5 pass (the API appeared to
   expose no key hook) and later restored once `capture_keys` + `onKey` were
   found.

@@ -167,18 +167,6 @@ local function itemTitle(item)
   return trim(item.title)
 end
 
--- Same flattening as Panel.qml's plainMarkdown(), rewritten with Lua patterns.
-local function plainMarkdown(value)
-  local text = tostring(value or "")
-  text = text:gsub("```.-```", "[code]")
-  text = text:gsub("`([^`]+)`", "%1")
-  text = text:gsub("%*%*([^%*]+)%*%*", "%1")
-  text = text:gsub("%*([^%*]+)%*", "%1")
-  text = text:gsub("#+%s*", "")
-  text = text:gsub("%[([^%]]+)%]%([^%)]*%)", "%1")
-  return trim(text)
-end
-
 local function detailObject()
   if type(detail.data) == "table" then
     return detail.data
@@ -480,12 +468,12 @@ local function detailPane()
   end
   table.insert(children, ui.separator({}))
 
-  local description = plainMarkdown(object.description)
+  local description = trim(object.description)
   if description == "" then
     description = tr("panel.no_description")
   end
-  table.insert(children, ui.scroll({ key = "linear-detail", flexGrow = 1, gap = 6, align = "stretch" }, {
-    ui.label({ text = description, color = "on_surface" }),
+  table.insert(children, ui.scroll({ key = "linear-detail", flexGrow = 1, gap = 6 }, {
+    ui.markdown({ text = description }),
   }))
 
   local url = itemUrl(object)
@@ -513,7 +501,15 @@ local function detailPane()
     ui.spacer({ flexGrow = 1 }),
   }))
 
-  return ui.column({ flexGrow = 4, gap = 6, padding = 8 }, children)
+  -- align = "stretch" is load-bearing. A column's children are *not* stretched
+  -- across the cross axis by default on 5.1.0 - they shrink-wrap and center - so
+  -- the description used to wrap inside a ~260px ribbon centered in a ~555px
+  -- pane, and the action buttons sat centered with it. Nothing about the scroll
+  -- could fix that from the inside: neither flexGrow nor an explicit width on
+  -- the scroll changed anything, because the constraint was the parent's.
+  -- listPane never had the bug: it is a direct child of the horizontal split
+  -- row, where the same flexGrow is the main axis.
+  return ui.column({ flexGrow = 4, gap = 6, padding = 8, align = "stretch" }, children)
 end
 
 render = function()

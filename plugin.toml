@@ -1,7 +1,7 @@
 id = "lollo/linear"
 name = "Linear"
 version = "1.0.0"
-plugin_api = 13
+plugin_api = 21
 author = "lollo"
 license = "MIT"
 icon = "git-branch"
